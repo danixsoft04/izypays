@@ -2418,6 +2418,29 @@ let currentSchool = null;
 let currentSubscription = null;
 let currentStudent = null;
 
+// Invalidates in-flight initialization whenever the active auth session changes.
+let authFlowVersion = 0;
+let logoutInProgress = false;
+
+function isCurrentAuthFlow(version, userId){
+  return version === authFlowVersion &&
+    !!userId &&
+    currentUser?.id === userId &&
+    !logoutInProgress;
+}
+
+function clearAuthenticatedState(){
+  currentUser = null;
+  currentSchool = null;
+  currentSubscription = null;
+  currentStudent = null;
+  students = [];
+  feeTypes = [];
+  studentFees = [];
+  payments = [];
+  notifications = [];
+}
+
 let students = [];
 let feeTypes = [];
 let studentFees = [];
@@ -2519,7 +2542,10 @@ function fullStudentName(student){
 ========================================================= */
 
 async function checkSession(){
+  const version = authFlowVersion;
   const {data,error} = await supabaseClient.auth.getSession();
+  if(version !== authFlowVersion) return;
+
   if(error){
     console.error(error);
     showPublicHome();
@@ -2528,25 +2554,28 @@ async function checkSession(){
 
   if(data.session){
     currentUser = data.session.user;
+    const userId = currentUser.id;
+    const sessionVersion = authFlowVersion;
     try{
       const registrationCompleted = await finishPendingSchoolRegistration();
+      if(!isCurrentAuthFlow(sessionVersion,userId)) return;
       if(registrationCompleted){
         showSchoolRegistrationSuccess();
         return;
       }
     }catch(regError){
+      if(!isCurrentAuthFlow(sessionVersion,userId)) return;
       console.error("Pending school registration could not be completed:",regError);
       showLogin();
       const loginAlert = document.getElementById("loginAlert");
       if(loginAlert) loginAlert.innerHTML = alertBox(regError.message || "Your login is active, but the school account could not be connected yet. Please try again.","danger");
       return;
     }
-    await initializeApplication();
+    if(isCurrentAuthFlow(sessionVersion,userId)) await initializeApplication();
   }else{
     showPublicHome();
   }
 }
-
 
 function showSchoolRegistration(){
   document.getElementById("registerSchoolAlert").innerHTML="";
@@ -2691,104 +2720,94 @@ async function finishPendingSchoolRegistration(){
 }
 
 async function adminLogin(){
-
-  const email =
-    document.getElementById("loginEmail").value.trim();
-
-  const password =
-    document.getElementById("loginPassword").value;
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const loginAlert = document.getElementById("loginAlert");
 
   if(!email || !password){
-
-    document.getElementById("loginAlert").innerHTML =
-      alertBox("Enter your email and password.","warning");
-
+    if(loginAlert) loginAlert.innerHTML = alertBox("Enter your email and password.","warning");
     return;
   }
 
-  document.getElementById("loginAlert").innerHTML =
-    alertBox("Signing in...","info");
+  if(loginAlert) loginAlert.innerHTML = alertBox("Signing in...","info");
 
-  const {data,error} =
-    await supabaseClient.auth.signInWithPassword({
-      email,
-      password
-    });
+  try {
+    const {data,error} = await supabaseClient.auth.signInWithPassword({email,password});
+    if(error) throw error;
+    if(!data?.user) throw new Error("Login succeeded, but no user session was returned. Please try again.");
 
-  if(error){
+    currentUser = data.user;
+    logoutInProgress = false;
+    const loginUserId = data.user.id;
+    const loginVersion = authFlowVersion;
 
-    document.getElementById("loginAlert").innerHTML =
-      alertBox(error.message,"danger");
-
-    return;
-  }
-
-  currentUser = data.user;
-
-  try{
-    const registrationCompleted = await finishPendingSchoolRegistration();
-    if(registrationCompleted){
-      showSchoolRegistrationSuccess();
+    try{
+      const registrationCompleted = await finishPendingSchoolRegistration();
+      if(!isCurrentAuthFlow(loginVersion,loginUserId)) return;
+      if(registrationCompleted){
+        showSchoolRegistrationSuccess();
+        return;
+      }
+    }catch(regError){
+      if(!isCurrentAuthFlow(loginVersion,loginUserId)) return;
+      console.error("School registration completion error:",regError);
+      if(loginAlert) loginAlert.innerHTML = alertBox(regError.message || "Your login worked, but the school account could not be connected yet.","danger");
       return;
     }
-  }catch(regError){
-    console.error("School registration completion error:",regError);
-    document.getElementById("loginAlert").innerHTML=alertBox(regError.message||"Your login worked, but the school account could not be connected yet.","danger");
-    return;
+
+    if(isCurrentAuthFlow(loginVersion,loginUserId)){
+      await initializeApplication();
+    }
+  } catch(error) {
+    console.error("Login error:",error);
+    if(loginAlert) loginAlert.innerHTML = alertBox(error?.message || "Unable to log in. Please try again.","danger");
+    showLogin();
   }
-
-  await initializeApplication();
-
 }
-
 
 async function logout(){
-
-  await supabaseClient.auth.signOut();
-
-  currentUser = null;
-  currentSchool = null;
-  currentSubscription = null;
-
+  // Invalidate pending loads immediately, before waiting for Supabase.
+  authFlowVersion++;
+  logoutInProgress = true;
+  clearAuthenticatedState();
   showLogin();
 
+  try{
+    const {error} = await supabaseClient.auth.signOut();
+    if(error){
+      console.error("Logout error:",error);
+      const loginAlert = document.getElementById("loginAlert");
+      if(loginAlert) loginAlert.innerHTML = alertBox("You have been returned to the login screen, but the session could not be fully signed out. Please check your connection and try again.","warning");
+    }
+  }catch(error){
+    console.error("Logout error:",error);
+    const loginAlert = document.getElementById("loginAlert");
+    if(loginAlert) loginAlert.innerHTML = alertBox("You have been returned to the login screen, but the session could not be fully signed out. Please check your connection and try again.","warning");
+  }finally{
+    clearAuthenticatedState();
+    logoutInProgress = false;
+    showLogin();
+  }
 }
-
 
 function showLogin(){
   document.getElementById("publicHome")?.classList.add("d-none");
-
-  document.getElementById("loginScreen")
-    .classList.remove("d-none");
-
-  document.getElementById("parentScreen")
-    .classList.add("d-none");
-
-  document.getElementById("appShell")
-    .classList.add("d-none");
-
+  document.getElementById("loginScreen")?.classList.remove("d-none");
+  document.getElementById("parentScreen")?.classList.add("d-none");
+  document.getElementById("appShell")?.classList.add("d-none");
 }
-
 
 function showParentPortal(){
-
-  document.getElementById("loginScreen")
-    .classList.add("d-none");
-
-  document.getElementById("parentScreen")
-    .classList.remove("d-none");
-
+  document.getElementById("publicHome")?.classList.add("d-none");
+  document.getElementById("loginScreen")?.classList.add("d-none");
+  document.getElementById("appShell")?.classList.add("d-none");
+  document.getElementById("parentScreen")?.classList.remove("d-none");
 }
 
-
 function backToAdminLogin(){
-
-  document.getElementById("parentScreen")
-    .classList.add("d-none");
-
-  document.getElementById("loginScreen")
-    .classList.remove("d-none");
-
+  document.getElementById("parentScreen")?.classList.add("d-none");
+  document.getElementById("appShell")?.classList.add("d-none");
+  document.getElementById("loginScreen")?.classList.remove("d-none");
 }
 
 
@@ -2797,44 +2816,128 @@ function backToAdminLogin(){
 ========================================================= */
 
 async function initializeApplication(){
+  const initVersion = authFlowVersion;
+  const initUserId = currentUser?.id;
+  const stillCurrent = () => isCurrentAuthFlow(initVersion,initUserId);
 
-  document.getElementById("loginScreen").classList.add("d-none");
-  document.getElementById("parentScreen").classList.add("d-none");
-  document.getElementById("appShell").classList.add("d-none");
-  document.getElementById("topUserEmail").textContent = currentUser?.email || "";
+  if(!stillCurrent()) return false;
 
-  const schoolLoaded = await loadSchool();
+  const publicHome = document.getElementById("publicHome");
+  const loginScreen = document.getElementById("loginScreen");
+  const parentScreen = document.getElementById("parentScreen");
+  const appShell = document.getElementById("appShell");
+  const loginAlert = document.getElementById("loginAlert");
+  const dashboardAlert = document.getElementById("dashboardAlert");
+  let subscriptionVerified = false;
 
-  if(!schoolLoaded){
-    await supabaseClient.auth.signOut();
-    currentUser = null;
-    currentSchool = null;
+  // Start from a clean screen so an old dashboard cannot remain visible.
+  publicHome?.classList.add("d-none");
+  loginScreen?.classList.add("d-none");
+  parentScreen?.classList.add("d-none");
+  appShell?.classList.add("d-none");
+  if(loginAlert) loginAlert.innerHTML = "";
+  const emailEl = document.getElementById("topUserEmail");
+  if(emailEl) emailEl.textContent = currentUser?.email || "";
+
+  try {
+    const schoolLoaded = await loadSchool();
+    if(!stillCurrent()) return false;
+
+    if(!schoolLoaded){
+      // No valid school membership: sign out and return to login.
+      const {error:signOutError} = await supabaseClient.auth.signOut();
+      if(signOutError) console.error("Sign-out after missing school membership failed:",signOutError);
+      if(currentUser?.id && currentUser.id !== initUserId) return false;
+      clearAuthenticatedState();
+      showLogin();
+      if(loginAlert) loginAlert.innerHTML = alertBox("This account is not registered to an izypays school account. Please create a school account first.","danger");
+      return false;
+    }
+
+    // Verify the subscription before opening the school dashboard.
+    const subscriptionAllowed = await loadSubscriptionStatus(true);
+    if(!stillCurrent()) return false;
+    subscriptionVerified = true;
+
+    if(!subscriptionAllowed){
+      appShell?.classList.remove("d-none");
+      showSubscriptionGate();
+      return true;
+    }
+
+    hideSubscriptionGate();
+    appShell?.classList.remove("d-none");
+
+    // Do not let one failed data request leave the user stuck on a blank screen.
+    if(dashboardAlert) dashboardAlert.innerHTML = alertBox("Loading your school dashboard...","info");
+    const results = await Promise.allSettled([
+      loadStudents(),
+      loadFeeTypes(),
+      loadStudentFees(),
+      loadPayments()
+    ]);
+    if(!stillCurrent()) return false;
+
+    const failedLoads = results.filter(result => result.status === "rejected");
+    if(failedLoads.length){
+      failedLoads.forEach(result => console.error("Dashboard data loading error:",result.reason));
+    }
+
+    try {
+      await refreshDashboard();
+    } catch(error) {
+      console.error("Dashboard refresh error:",error);
+      if(dashboardAlert) dashboardAlert.innerHTML = alertBox("Your dashboard opened, but its summary could not be refreshed. Please use Refresh or check your connection.","warning");
+    }
+    if(!stillCurrent()) return false;
+
+    try {
+      await loadSettings();
+    } catch(error) {
+      console.error("Settings loading error:",error);
+    }
+    if(!stillCurrent()) return false;
+
+    if(dashboardAlert){
+      if(failedLoads.length){
+        dashboardAlert.innerHTML = alertBox("The dashboard is open, but some records could not load. Check your internet connection and click Refresh.","warning");
+      } else if(dashboardAlert.textContent.includes("Loading your school dashboard")) {
+        dashboardAlert.innerHTML = "";
+      }
+    }
+
+    return true;
+  } catch(error) {
+    console.error("Application initialization error:",error);
+    if(!stillCurrent()) return false;
+
+    // If school access was verified, keep the app visible and explain the issue.
+    // Otherwise return to login rather than leaving the user on a blank screen.
+    if(currentSchool?.id && subscriptionVerified){
+      appShell?.classList.remove("d-none");
+      if(dashboardAlert) dashboardAlert.innerHTML = alertBox("The dashboard opened with a loading problem. Please click Refresh or reload the page. Details: " + (error?.message || "Unknown error"),"warning");
+      return true;
+    }
+    if(currentSchool?.id && !subscriptionVerified){
+      appShell?.classList.remove("d-none");
+      const gateMessage = document.getElementById("subscriptionGateMessage");
+      if(gateMessage) gateMessage.textContent = "We could not verify this school's subscription. Please refresh the page and try again. No new payment is required just to retry verification.";
+      showSubscriptionGate();
+      return false;
+    }
+
     showLogin();
-    document.getElementById("loginAlert").innerHTML = alertBox("This account is not registered to a izypays school account. Please create a school account first.","danger");
+    if(loginAlert) loginAlert.innerHTML = alertBox(error?.message || "Unable to open the dashboard. Please try again.","danger");
     return false;
   }
-
-  document.getElementById("appShell").classList.remove("d-none");
-
-  const subscriptionAllowed = await loadSubscriptionStatus(true);
-  if(!subscriptionAllowed){
-    showSubscriptionGate();
-    return true;
-  }
-
-  hideSubscriptionGate();
-  await Promise.all([loadStudents(),loadFeeTypes(),loadStudentFees(),loadPayments()]);
-  await refreshDashboard();
-  await loadSettings();
-  return true;
 }
-
 async function loadSchool(){
-  if(!currentUser?.id) return false;
-  const {data:membership,error} = await supabaseClient.from("school_users").select("school_id,role").eq("user_id",currentUser.id).maybeSingle();
-  if(error || !membership?.school_id) return false;
+  const userId = currentUser?.id;
+  if(!userId) return false;
+  const {data:membership,error} = await supabaseClient.from("school_users").select("school_id,role").eq("user_id",userId).maybeSingle();
+  if(error || !membership?.school_id || currentUser?.id !== userId) return false;
   const {data:school,error:schoolError} = await supabaseClient.from("schools").select("*").eq("id",membership.school_id).maybeSingle();
-  if(schoolError || !school) return false;
+  if(schoolError || !school || currentUser?.id !== userId) return false;
   currentSchool = school;
   document.getElementById("topSchoolName").textContent = school.name || "izypays";
   return true;
@@ -5752,18 +5855,28 @@ document.addEventListener(
 
 /* Listen for authentication changes */
 
-supabaseClient.auth.onAuthStateChange(
-  async (event,session)=>{
-
-    if(session){
-
-      currentUser =
-        session.user;
-
+supabaseClient.auth.onAuthStateChange((event,session)=>{
+  if(session){
+    // A different account invalidates work started for the previous account.
+    if(currentUser?.id && currentUser.id !== session.user.id){
+      authFlowVersion++;
+      currentSchool = null;
+      currentSubscription = null;
+      document.getElementById("appShell")?.classList.add("d-none");
     }
-
+    currentUser = session.user;
+    return;
   }
-);
+
+  // Ignore INITIAL_SESSION with no session; checkSession decides whether to show
+  // the public home page. A real sign-out must cancel pending dashboard loads.
+  if(event === "SIGNED_OUT"){
+    authFlowVersion++;
+    clearAuthenticatedState();
+    document.getElementById("appShell")?.classList.add("d-none");
+    if(!logoutInProgress) showLogin();
+  }
+});
 
 </script>
 
