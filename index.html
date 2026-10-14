@@ -338,6 +338,7 @@ body{
 <style>
 .dashboard-scope-panel{min-height:120px}
 .dashboard-scope-btn{white-space:nowrap}
+.parent-student-code{min-width:0}
 </style>
 
 </head>
@@ -514,18 +515,23 @@ body{
 
       <div class="mb-3">
         <label class="form-label">Student ID</label>
-        <input id="parentStudentCode" class="form-control" placeholder="e.g. SCH-000001-STU-000001" autocomplete="off">
+        <input id="parentStudentCode" class="form-control parent-student-code" placeholder="e.g. SCH-000001-STU-000001" autocomplete="off">
       </div>
+      <div id="additionalParentStudentCodes"></div>
+      <button type="button" class="btn btn-outline-primary btn-sm mb-3" onclick="addParentStudentField()">
+        <i class="bi bi-plus-circle me-1"></i>Add another child
+      </button>
 
       <div class="mb-3">
         <label class="form-label">Parent Phone</label>
         <input id="parentPhone" class="form-control" placeholder="0240000000" autocomplete="tel">
+        <div class="form-text">Use the same parent phone number for all children.</div>
       </div>
 
       <button class="btn btn-primary w-100"
               onclick="findParentStudent()">
         <i class="bi bi-search"></i>
-        Find Student
+        Find My Children
       </button>
 
       <button class="btn btn-link w-100 mt-2" onclick="backToAdminLogin()">Admin Login</button>
@@ -5660,19 +5666,127 @@ function copyFollowupMessage(){
    PARENT PORTAL
 ========================================================= */
 
-async function findParentStudent(){
- const code=document.getElementById("parentStudentCode").value.trim().toUpperCase(); const phone=document.getElementById("parentPhone").value.trim();
- if(!code||!phone){document.getElementById("parentAlert").innerHTML=alertBox("Enter the student ID and parent phone number.","warning");return;}
- document.getElementById("parentAlert").innerHTML=alertBox("Finding student...","info");
- const {data,error}=await supabaseClient.rpc("create_parent_session_by_student_code",{p_student_code:code,p_parent_phone:phone});
- if(error){document.getElementById("parentAlert").innerHTML=alertBox(error.message,"danger");return;}
- const row=Array.isArray(data)?data[0]:data; if(!row){document.getElementById("parentAlert").innerHTML=alertBox("Student not found.","warning");return;}
- currentStudent={id:row.student_id,student_id:row.student_code,first_name:row.first_name,middle_name:row.middle_name,surname:row.surname,class_name:row.class_name,parent_phone:phone};
- localStorage.setItem("schoolpay_parent_profile",JSON.stringify({student_code:code,parent_phone:phone,school_name:row.school_name||"",school_code:row.school_code||""})); localStorage.setItem("schoolpay_parent_session",row.session_token);
- document.getElementById("parentAlert").innerHTML="";document.getElementById("parentSearchForm").classList.add("d-none");document.getElementById("parentStudentResult").classList.remove("d-none");await loadParentFees(row.session_token);
+let parentVerifiedChildren = [];
+let parentSelectedChildIndex = 0;
+
+function addParentStudentField(value=""){
+ const holder=document.getElementById("additionalParentStudentCodes");
+ if(!holder)return;
+ const wrap=document.createElement("div");
+ wrap.className="mb-3 parent-extra-student-code";
+ const row=document.createElement("div");
+ row.className="input-group";
+ const input=document.createElement("input");
+ input.type="text";
+ input.className="form-control parent-student-code";
+ input.placeholder="Enter another Student ID";
+ input.autocomplete="off";
+ input.value=value;
+ const remove=document.createElement("button");
+ remove.type="button";
+ remove.className="btn btn-outline-danger";
+ remove.title="Remove this Student ID";
+ remove.setAttribute("aria-label","Remove this Student ID");
+ remove.innerHTML='<i class="bi bi-x-lg"></i>';
+ remove.onclick=()=>wrap.remove();
+ row.appendChild(input);
+ row.appendChild(remove);
+ wrap.appendChild(row);
+ holder.appendChild(wrap);
 }
-function restoreParentDetails(){try{const x=JSON.parse(localStorage.getItem("schoolpay_parent_profile")||"null");if(x){document.getElementById("parentStudentCode").value=x.student_code||"";document.getElementById("parentPhone").value=x.parent_phone||"";}}catch(e){}}
-function backToParentSearch(){document.getElementById("parentSearchForm").classList.remove("d-none");document.getElementById("parentStudentResult").classList.add("d-none");}
+
+function getParentStudentCodes(){
+ return Array.from(document.querySelectorAll("#parentSearchForm .parent-student-code"))
+  .map(el=>el.value.trim().toUpperCase()).filter(Boolean)
+  .filter((code,index,list)=>list.indexOf(code)===index);
+}
+
+async function findParentStudent(){
+ const codes=getParentStudentCodes();
+ const phone=document.getElementById("parentPhone").value.trim();
+ if(!codes.length||!phone){
+  document.getElementById("parentAlert").innerHTML=alertBox("Enter at least one Student ID and the parent phone number.","warning");
+  return;
+ }
+ document.getElementById("parentAlert").innerHTML=alertBox("Verifying Student IDs with the parent phone number...","info");
+ parentVerifiedChildren=[];
+ const failed=[];
+ for(const code of codes){
+  try{
+   const {data,error}=await supabaseClient.rpc("create_parent_session_by_student_code",{p_student_code:code,p_parent_phone:phone});
+   if(error){failed.push(code+": "+(error.message||"Verification failed"));continue;}
+   const row=Array.isArray(data)?data[0]:data;
+   if(!row||!row.session_token){failed.push(code+": Student ID or parent phone did not match.");continue;}
+   parentVerifiedChildren.push({
+    session_token:row.session_token,
+    student_code:row.student_code||code,
+    student_id:row.student_id,
+    first_name:row.first_name||"",
+    middle_name:row.middle_name||"",
+    surname:row.surname||"",
+    class_name:row.class_name||"",
+    student_name:row.student_name||[row.first_name,row.middle_name,row.surname].filter(Boolean).join(" "),
+    school_name:row.school_name||"",
+    school_code:row.school_code||"",
+    parent_phone:phone
+   });
+  }catch(err){failed.push(code+": "+(err.message||"Could not verify this student."));}
+ }
+ if(!parentVerifiedChildren.length){
+  document.getElementById("parentAlert").innerHTML=alertBox("No Student IDs were verified. Check each ID and make sure the same parent phone number is registered for the children."+(failed.length?"<br>"+failed.map(escapeHTML).join("<br>"):""),"warning");
+  return;
+ }
+ parentSelectedChildIndex=0;
+ const first=parentVerifiedChildren[0];
+ const profile={student_code:first.student_code,student_codes:parentVerifiedChildren.map(c=>c.student_code),parent_phone:phone,school_name:first.school_name||"",school_code:first.school_code||""};
+ localStorage.setItem("schoolpay_parent_profile",JSON.stringify(profile));
+ localStorage.setItem("schoolpay_parent_session",first.session_token);
+ document.getElementById("parentAlert").innerHTML=failed.length
+  ?alertBox(parentVerifiedChildren.length+" child(ren) verified. Some IDs were not verified:<br>"+failed.map(escapeHTML).join("<br>"),"warning")
+  :alertBox(parentVerifiedChildren.length+" child(ren) verified successfully.","success");
+ document.getElementById("parentSearchForm").classList.add("d-none");
+ document.getElementById("parentStudentResult").classList.remove("d-none");
+ await loadParentFees(first.session_token);
+}
+
+function restoreParentDetails(){
+ try{
+  const x=JSON.parse(localStorage.getItem("schoolpay_parent_profile")||"null");
+  if(!x)return;
+  const codes=Array.isArray(x.student_codes)&&x.student_codes.length?x.student_codes:[x.student_code||""];
+  const first=document.getElementById("parentStudentCode");
+  if(first)first.value=codes[0]||"";
+  const holder=document.getElementById("additionalParentStudentCodes");
+  if(holder)holder.innerHTML="";
+  codes.slice(1).forEach(code=>addParentStudentField(code));
+  document.getElementById("parentPhone").value=x.parent_phone||"";
+ }catch(e){}
+}
+
+function backToParentSearch(){
+ document.getElementById("parentSearchForm").classList.remove("d-none");
+ document.getElementById("parentStudentResult").classList.add("d-none");
+ document.getElementById("parentAlert").innerHTML="";
+}
+
+function parentChildPickerMarkup(){
+ if(parentVerifiedChildren.length<2)return "";
+ const buttons=parentVerifiedChildren.map((child,index)=>{
+  const name=child.student_name||child.student_code;
+  const active=index===parentSelectedChildIndex;
+  return `<button type="button" class="btn ${active?"btn-primary":"btn-outline-primary"} text-start w-100 mb-2" onclick="selectParentChild(${index})"><span class="fw-semibold">${escapeHTML(name)}</span><br><small>Student ID: ${escapeHTML(child.student_code)}${child.class_name?" · "+escapeHTML(child.class_name):""}</small></button>`;
+ }).join("");
+ return `<div class="border rounded-3 p-3 mb-3"><div class="fw-bold mb-2"><i class="bi bi-people me-1"></i>Your verified children</div><div class="small text-muted mb-2">Select a child to view their fees or make a payment.</div>${buttons}</div>`;
+}
+
+async function selectParentChild(index){
+ if(!Number.isInteger(index)||index<0||index>=parentVerifiedChildren.length)return;
+ parentSelectedChildIndex=index;
+ const child=parentVerifiedChildren[index];
+ currentStudent={id:child.student_id,student_id:child.student_code,first_name:child.first_name,middle_name:child.middle_name,surname:child.surname,class_name:child.class_name,parent_phone:child.parent_phone};
+ localStorage.setItem("schoolpay_parent_session",child.session_token);
+ await loadParentFees(child.session_token);
+}
 async function loadParentFees(sessionToken){
  const result=document.getElementById("parentStudentResult");
  result.innerHTML='<div class="text-center p-4"><div class="spinner-border"></div><p class="mt-3 mb-0">Loading fee information...</p></div>';
@@ -5710,8 +5824,12 @@ async function loadParentFees(sessionToken){
   }).join("");
 
   const profile=(()=>{try{return JSON.parse(localStorage.getItem("schoolpay_parent_profile")||"{}")}catch(e){return {}}})();
+  // School name must follow the currently selected child, not the first saved profile.
+  const selectedParentChild=parentVerifiedChildren[parentSelectedChildIndex]||{};
+  const selectedSchoolName=selectedParentChild.school_name||row.school_name||profile.school_name||"School";
   result.innerHTML=`<div>
-   <div class="mb-3"><div class="small text-primary fw-semibold mb-1"><i class="bi bi-building me-1"></i>${escapeHTML(profile.school_name||"School")}</div><h5 class="fw-bold mb-1">${escapeHTML(row.student_name||"")}</h5><div class="small text-muted">Student ID: ${escapeHTML(row.student_code||"-")} · Class: ${escapeHTML(row.class_name||"-")}</div></div>
+   ${parentChildPickerMarkup()}
+   <div class="mb-3"><div class="small text-primary fw-semibold mb-1"><i class="bi bi-building me-1"></i>${escapeHTML(selectedSchoolName)}</div><h5 class="fw-bold mb-1">${escapeHTML(row.student_name||"")}</h5><div class="small text-muted">Student ID: ${escapeHTML(row.student_code||"-")} · Class: ${escapeHTML(row.class_name||"-")}</div></div>
    <div class="row g-2 mb-3">
     <div class="col-4"><div class="border rounded-3 p-3 h-100"><small class="text-muted d-block">Assigned</small><strong>${money(total,currency)}</strong></div></div>
     <div class="col-4"><div class="border rounded-3 p-3 h-100"><small class="text-muted d-block">Paid</small><strong class="text-success">${money(paid,currency)}</strong></div></div>
