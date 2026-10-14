@@ -60,6 +60,19 @@ body{
   min-height:100vh;
 }
 
+/* Subscription gate: hide and disable every admin app section while locked. */
+#appShell.subscription-locked > :not(#subscriptionGate){
+  visibility:hidden !important;
+  pointer-events:none !important;
+  user-select:none !important;
+}
+#subscriptionGate{
+  position:fixed !important;
+  inset:0 !important;
+  z-index:2147483000 !important;
+  pointer-events:auto !important;
+}
+
 .sidebar{
   width:250px;
   background:var(--sp-dark);
@@ -530,6 +543,12 @@ body{
      APPLICATION
 ========================================================= -->
 <div id="appShell" class="app-shell d-none">
+<div id="subscriptionReminderBanner" class="d-none" style="position:fixed;left:12px;right:12px;bottom:12px;z-index:10000;max-width:760px;margin-left:auto;margin-right:auto;box-shadow:0 8px 30px rgba(15,23,42,.18)">
+  <div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-3 mb-0" role="status">
+    <div><strong id="subscriptionReminderTitle">izypays subscription</strong><div id="subscriptionReminderMessage" class="small mt-1"></div></div>
+    <button type="button" class="btn btn-primary btn-sm flex-shrink-0" onclick="startIzypaysSubscription()"><i class="bi bi-phone me-1"></i>Pay GH₵300</button>
+  </div>
+</div>
 <div id="subscriptionGate" class="d-none" style="position:fixed;inset:0;background:rgba(248,250,253,.97);z-index:99999;overflow:auto;">
   <div class="container py-5">
     <div class="row justify-content-center">
@@ -540,11 +559,13 @@ body{
           </div>
           <h3 class="fw-bold mb-2">izypays subscription required</h3>
           <p id="subscriptionGateMessage" class="text-muted mb-4">
-            Your free trial has ended. Subscribe for GH₵300/month to continue using izypays.
+            Your free trial or paid month has ended. The school administrator must pay GH₵300 to unlock the school dashboard.
           </p>
           <button id="subscriptionGateButton" class="btn btn-primary btn-lg fw-bold" onclick="startIzypaysSubscription()">
-            <i class="bi bi-credit-card me-1"></i> Subscribe — GH₵300/month
+            <i class="bi bi-phone me-1"></i> Pay GH₵300 for 1 month
           </button>
+          <div id="subscriptionPaymentNotice" class="small text-muted mt-3">If a payment fails or is cancelled, you can return here and try again. To use a different account, log out below and sign in with that account.</div>
+          <button type="button" class="btn btn-outline-secondary mt-3" onclick="logout()"><i class="bi bi-box-arrow-left me-1"></i> Log out / switch account</button>
           <div class="small text-muted mt-3">Your school can subscribe at any time during the 14-day trial.</div>
         </div>
       </div>
@@ -2791,6 +2812,9 @@ async function logout(){
 }
 
 function showLogin(){
+  document.getElementById("subscriptionGate")?.classList.add("d-none");
+  document.getElementById("subscriptionReminderBanner")?.classList.add("d-none");
+  document.body.classList.remove("overflow-hidden");
   document.getElementById("publicHome")?.classList.add("d-none");
   document.getElementById("loginScreen")?.classList.remove("d-none");
   document.getElementById("parentScreen")?.classList.add("d-none");
@@ -2798,6 +2822,9 @@ function showLogin(){
 }
 
 function showParentPortal(){
+  document.getElementById("subscriptionGate")?.classList.add("d-none");
+  document.getElementById("subscriptionReminderBanner")?.classList.add("d-none");
+  document.body.classList.remove("overflow-hidden");
   document.getElementById("publicHome")?.classList.add("d-none");
   document.getElementById("loginScreen")?.classList.add("d-none");
   document.getElementById("appShell")?.classList.add("d-none");
@@ -2920,6 +2947,7 @@ async function initializeApplication(){
     }
     if(currentSchool?.id && !subscriptionVerified){
       appShell?.classList.remove("d-none");
+      appShell?.classList.add("subscription-locked");
       const gateMessage = document.getElementById("subscriptionGateMessage");
       if(gateMessage) gateMessage.textContent = "We could not verify this school's subscription. Please refresh the page and try again. No new payment is required just to retry verification.";
       showSubscriptionGate();
@@ -2960,10 +2988,13 @@ async function loadSubscriptionStatus(enforce=false){
 
   const now=new Date();
   const trialEnd=currentSubscription?.trial_ends_at?new Date(currentSubscription.trial_ends_at):null;
+  const paidUntilRaw=currentSubscription?.current_period_end||currentSubscription?.next_payment_at||null;
+  const paidUntil=paidUntilRaw?new Date(paidUntilRaw):null;
   const status=String(currentSubscription?.status||"").toLowerCase();
   const trialActive=status==="trialing" && trialEnd && now<trialEnd;
-  const active=status==="active";
-  const allowed=active||trialActive;
+  // Fail closed: an active status without a valid future paid-through date is not enough.
+  const active=status==="active" && !!paidUntil && Number.isFinite(paidUntil.getTime()) && now<paidUntil;
+  const allowed=!!(active||trialActive);
 
   if(enforce){
     if(allowed) hideSubscriptionGate();
@@ -2977,8 +3008,9 @@ function showSubscriptionGate(){
   if(!gate)return;
   const msg=document.getElementById("subscriptionGateMessage");
   const btn=document.getElementById("subscriptionGateButton");
-  if(msg)msg.innerHTML='Your free trial has ended. Subscribe for <strong>GH₵300/month</strong> to continue using izypays.';
+  if(msg)msg.innerHTML='Your free trial or paid month has ended. The school administrator must pay <strong>GH₵300</strong> to unlock the school dashboard.';
   if(btn)btn.disabled=false;
+  document.getElementById("appShell")?.classList.add("subscription-locked");
   gate.classList.remove("d-none");
   document.body.classList.add("overflow-hidden");
 }
@@ -2987,47 +3019,91 @@ function hideSubscriptionGate(){
   const gate=document.getElementById("subscriptionGate");
   if(!gate)return;
   gate.classList.add("d-none");
+  document.getElementById("appShell")?.classList.remove("subscription-locked");
   document.body.classList.remove("overflow-hidden");
 }
 
 
 function renderSubscriptionCard(){
   const box=document.getElementById("subscriptionCard");
-  if(!box||!currentSubscription)return;
-  const trialEnd=new Date(currentSubscription.trial_ends_at);
+  if(!currentSubscription)return;
   const now=new Date();
-  const trialing=currentSubscription.status==='trialing' && now<trialEnd;
-  const days=Math.max(0,Math.ceil((trialEnd-now)/86400000));
-  let title='izypays subscription',badge='',message='',action='';
+  const trialEnd=currentSubscription.trial_ends_at?new Date(currentSubscription.trial_ends_at):null;
+  const paidRaw=currentSubscription.current_period_end||currentSubscription.next_payment_at||null;
+  const paidEnd=paidRaw?new Date(paidRaw):null;
+  const status=String(currentSubscription.status||"").toLowerCase();
+  const trialing=status==="trialing"&&trialEnd&&now<trialEnd;
+  const active=status==="active"&&!!paidEnd&&Number.isFinite(paidEnd.getTime())&&now<paidEnd;
+  const dueDate=trialing?trialEnd:paidEnd;
+  const days=dueDate?Math.ceil((dueDate-now)/86400000):null;
+  let badge="",message="";
+  const payButton='<button class="btn btn-primary btn-sm" onclick="startIzypaysSubscription()"><i class="bi bi-phone me-1"></i>Pay GH₵300 for 1 month</button>';
   if(trialing){
-    badge=`<span class="badge text-bg-primary">FREE TRIAL</span>`;
-    message=`You have <strong>${days} day${days===1?'':'s'}</strong> remaining in your 14-day free trial. No school subscription charge is being made during the trial.`;
-    action=`<div class="d-flex flex-wrap gap-2 justify-content-end"><button class="btn btn-outline-primary btn-sm" onclick="shareIzypays()"><i class="bi bi-share me-1"></i>Share izypays</button><button class="btn btn-primary btn-sm" onclick="startIzypaysSubscription()"><i class="bi bi-credit-card me-1"></i>Subscribe — GH₵300/month</button></div>`;
-  }else if(currentSubscription.status==='active'){
-    badge=`<span class="badge text-bg-success">ACTIVE</span>`;
-    message=`Your izypays school subscription is active at <strong>GH₵300/month</strong>.`;
-    action=`<span class="small text-muted">Next payment: ${currentSubscription.next_payment_at?formatDate(currentSubscription.next_payment_at):'Managed by Paystack'}</span>`;
+    badge='<span class="badge text-bg-primary">FREE TRIAL</span>';
+    message=`You have <strong>${Math.max(0,days)} day${days===1?"":"s"}</strong> left in your 14-day free trial. You can pay here for the next month; no card is saved for automatic billing.`;
+  }else if(active){
+    badge='<span class="badge text-bg-success">ACTIVE</span>';
+    if(days!==null&&days<=1)message="Your paid period is due today or tomorrow. Renew now to avoid losing dashboard access.";
+    else if(days!==null&&days<=3)message=`Your paid period ends in <strong>${days} days</strong>. Renew now to avoid interruption.`;
+    else if(days!==null&&days<=7)message=`Your paid period ends in <strong>${days} days</strong>. Please plan to renew.`;
+    else message=paidEnd?`Your subscription is active until <strong>${formatDate(paidEnd.toISOString())}</strong>. Renewing early adds a month after your remaining paid time.` : "Your subscription is active. Renew monthly using Mobile Money or another available payment method.";
   }else{
-    badge=`<span class="badge text-bg-warning">SUBSCRIPTION REQUIRED</span>`;
-    message=`Your free trial has ended. Subscribe for <strong>GH₵300/month</strong> to continue using izypays.`;
-    action=`<button class="btn btn-primary btn-sm" onclick="startIzypaysSubscription()"><i class="bi bi-credit-card me-1"></i>Subscribe — GH₵300/month</button>`;
+    badge='<span class="badge text-bg-warning">PAYMENT REQUIRED</span>';
+    message="Your free trial or paid period has ended. Pay GH₵300 for one month to unlock the school dashboard.";
   }
-  box.innerHTML=`<div class="card-sp subscription-card p-4"><div class="d-flex flex-wrap justify-content-between align-items-center gap-3"><div><div class="d-flex align-items-center gap-2 mb-1"><h5 class="mb-0">${title}</h5>${badge}</div><div class="text-muted">${message}</div></div><div>${action}</div></div></div>`;
+  if(box)box.innerHTML=`<div class="card-sp subscription-card p-4"><div class="d-flex flex-wrap justify-content-between align-items-center gap-3"><div><div class="d-flex align-items-center gap-2 mb-1"><h5 class="mb-0">izypays subscription</h5>${badge}</div><div class="text-muted">${message}</div></div><div>${payButton}</div></div></div>`;
+  updateSubscriptionReminder();
+}
+
+function updateSubscriptionReminder(){
+  const banner=document.getElementById("subscriptionReminderBanner");
+  const title=document.getElementById("subscriptionReminderTitle");
+  const message=document.getElementById("subscriptionReminderMessage");
+  if(!banner||!title||!message||!currentSubscription)return;
+  const now=new Date();
+  const status=String(currentSubscription.status||"").toLowerCase();
+  const trialEnd=currentSubscription.trial_ends_at?new Date(currentSubscription.trial_ends_at):null;
+  const paidRaw=currentSubscription.current_period_end||currentSubscription.next_payment_at||null;
+  const paidEnd=paidRaw?new Date(paidRaw):null;
+  const trialing=status==="trialing"&&trialEnd&&now<trialEnd;
+  const dueDate=trialing?trialEnd:paidEnd;
+  const days=dueDate?Math.ceil((dueDate-now)/86400000):null;
+  const active=status==="active"&&!!paidEnd&&Number.isFinite(paidEnd.getTime())&&now<paidEnd;
+  if(trialing&&days!==null&&days<=7){
+    banner.classList.remove("d-none");
+    title.textContent="Free trial ending soon";
+    message.textContent="Your free trial ends in "+Math.max(0,days)+" day(s). Pay GH₵300 for the next month when ready.";
+  }else if(active&&days!==null&&days>0&&days<=7){
+    banner.classList.remove("d-none");
+    if(days<=1){title.textContent="Payment due within 24 hours";message.textContent="Renew now to avoid losing access to the school dashboard.";}
+    else if(days<=3){title.textContent="Payment due in "+days+" days";message.textContent="Your paid period ends soon. Pay GH₵300 to keep using izypays.";}
+    else{title.textContent="Payment due within a week";message.textContent="Your paid period ends in "+days+" days. Renew now to avoid interruption.";}
+  }else{
+    banner.classList.add("d-none");
+  }
 }
 
 async function startIzypaysSubscription(){
   if(!currentSchool?.id || !currentUser?.email) return;
-  const btns=document.querySelectorAll('#subscriptionCard button');btns.forEach(b=>b.disabled=true);
+  const btns=document.querySelectorAll('#subscriptionCard button, #subscriptionGateButton');
+  const notice=document.getElementById('subscriptionPaymentNotice');
+  btns.forEach(b=>b.disabled=true);
+  if(notice) notice.textContent='Connecting to Paystack. Do not close this page while checkout is opening.';
   try{
     const {data:sessionData}=await supabaseClient.auth.getSession();
     const token=sessionData?.session?.access_token;
     if(!token) throw new Error('Please sign in again.');
-    const res = await fetch(SUPABASE_URL + "/functions/v1/izypays-subscription", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify({ school_id: currentSchool.id }) });
+    const res = await fetch(SUPABASE_URL + "/functions/v1/izypays-manual-subscription", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify({ school_id: currentSchool.id }) });
     const out=await res.json();
     if(!res.ok) throw new Error(out.error||out.message||'Unable to start subscription.');
     if(out.authorization_url){window.location.href=out.authorization_url;return;}
     throw new Error('Paystack did not return an authorization URL.');
-  }catch(e){alert(e.message||'Unable to start subscription.');btns.forEach(b=>b.disabled=false);}
+  }catch(e){
+    const message=e.message||'Unable to start subscription.';
+    if(notice) notice.textContent='Payment was not started: '+message+' You can try again or log out and sign in with another account.';
+    else alert(message);
+    btns.forEach(b=>b.disabled=false);
+  }
 }
 
 async function forgotPassword(){
