@@ -341,6 +341,11 @@ body{
 .parent-student-code{min-width:0}
 </style>
 
+<style>
+.password-recovery-screen{position:fixed;inset:0;z-index:2147483001;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(244,247,252,.98);overflow-y:auto}
+.password-recovery-card{width:100%;max-width:480px;background:#fff;border:1px solid #e5eaf2;border-radius:22px;padding:clamp(22px,5vw,38px);box-shadow:0 20px 70px rgba(25,45,80,.14)}
+.password-recovery-card .recovery-icon{width:58px;height:58px;display:flex;align-items:center;justify-content:center;border-radius:18px;background:#eaf2ff;color:#175cd3;font-size:1.7rem;margin-bottom:18px}
+</style>
 </head>
 
 <body>
@@ -401,7 +406,7 @@ body{
       </div>
 
       <div class="text-center mt-2">
-        <button class="btn btn-link btn-sm" onclick="forgotPassword()">Forgot password?</button>
+        <button id="forgotPasswordButton" class="btn btn-link btn-sm" type="button" onclick="forgotPassword()">Forgot password?</button>
       </div>
 
       <div class="text-center mt-2">
@@ -423,6 +428,22 @@ body{
 
 </div>
 
+
+<!-- Password reset screen shown after a valid Supabase recovery link -->
+<div id="passwordRecoveryScreen" class="password-recovery-screen d-none" role="dialog" aria-modal="true" aria-labelledby="passwordRecoveryTitle">
+  <div class="password-recovery-card">
+    <div class="recovery-icon"><i class="bi bi-shield-lock"></i></div>
+    <h2 id="passwordRecoveryTitle" class="fw-bold mb-2">Choose a new password</h2>
+    <p class="text-muted mb-4">Create a new password for your izypays account. Use at least 8 characters.</p>
+    <div id="passwordRecoveryAlert" aria-live="polite"></div>
+    <form id="passwordRecoveryForm" onsubmit="updatePasswordFromRecovery(event)">
+      <div class="mb-3"><label for="recoveryNewPassword" class="form-label">New password</label><input id="recoveryNewPassword" class="form-control form-control-lg" type="password" minlength="8" autocomplete="new-password" required></div>
+      <div class="mb-4"><label for="recoveryConfirmPassword" class="form-label">Confirm new password</label><input id="recoveryConfirmPassword" class="form-control form-control-lg" type="password" minlength="8" autocomplete="new-password" required></div>
+      <button id="saveRecoveredPasswordButton" class="btn btn-primary btn-lg w-100 fw-bold" type="submit">Save new password</button>
+    </form>
+    <button class="btn btn-link w-100 mt-3" type="button" onclick="leavePasswordRecovery()">Return to login</button>
+  </div>
+</div>
 
 <!-- =========================================================
      SCHOOL REGISTRATION
@@ -2390,6 +2411,9 @@ const SUPABASE_URL =
 const SUPABASE_PUBLISHABLE_KEY =
   "sb_publishable_WEP8NmIGFvzsg5ex9lwg_w_520Fx5-e";
 
+// Password recovery links must return to the hosted app, not a local file or a transient URL.
+const IZYPAYS_AUTH_REDIRECT_URL = "https://danixsoft04.github.io/izypays-password-recovery-site/recovery.html";
+
 /*
  IMPORTANT:
  The Paystack SECRET KEY is NOT placed here.
@@ -2444,6 +2468,21 @@ let currentUser = null;
 let currentSchool = null;
 let currentSubscription = null;
 let currentStudent = null;
+
+// Detect a Supabase recovery link immediately, before the normal session check can
+// initialize the admin dashboard. Supabase recovery links normally carry type=recovery
+// in the URL fragment; some configurations may expose it in the query string.
+function hasPasswordRecoveryUrl(){
+  try{
+    const hashParams = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
+    const queryParams = new URLSearchParams(window.location.search || "");
+    return hashParams.get("type") === "recovery" ||
+      queryParams.get("type") === "recovery" ||
+      hashParams.get("error_code") === "otp_expired" ||
+      queryParams.get("error_code") === "otp_expired";
+  }catch(e){ return false; }
+}
+let passwordRecoveryMode = hasPasswordRecoveryUrl();
 
 // Invalidates in-flight initialization whenever the active auth session changes.
 let authFlowVersion = 0;
@@ -2570,12 +2609,24 @@ function fullStudentName(student){
 
 async function checkSession(){
   const version = authFlowVersion;
+
+  // Recovery links must show the password form, not the authenticated dashboard.
+  if(passwordRecoveryMode){
+    showPasswordRecovery();
+    return;
+  }
+
   const {data,error} = await supabaseClient.auth.getSession();
   if(version !== authFlowVersion) return;
 
   if(error){
     console.error(error);
     showPublicHome();
+    return;
+  }
+
+  if(passwordRecoveryMode){
+    showPasswordRecovery();
     return;
   }
 
@@ -3112,13 +3163,122 @@ async function startIzypaysSubscription(){
   }
 }
 
+let passwordResetRequestInProgress = false;
+
 async function forgotPassword(){
   const email=(document.getElementById('loginEmail')?.value||'').trim();
-  if(!email){document.getElementById('loginAlert').innerHTML=alertBox('Enter your email first, then choose Forgot password.','warning');return;}
-  const redirect=window.location.origin+window.location.pathname;
-  const {error}=await supabaseClient.auth.resetPasswordForEmail(email,{redirectTo:redirect});
-  document.getElementById('loginAlert').innerHTML=error?alertBox(error.message,'danger'):alertBox('Password reset instructions have been sent to your email.','success');
+  const alertEl=document.getElementById('loginAlert');
+  const button=document.getElementById('forgotPasswordButton');
+
+  if(passwordResetRequestInProgress) return;
+
+  if(!email){
+    if(alertEl)alertEl.innerHTML=alertBox('Enter your administrator login email first, then choose Forgot password.','warning');
+    document.getElementById('loginEmail')?.focus();
+    return;
+  }
+
+  passwordResetRequestInProgress = true;
+  if(button){
+    button.disabled=true;
+    button.textContent='Sending reset email...';
+  }
+  if(alertEl)alertEl.innerHTML=alertBox('Requesting a password-reset email. Please wait and do not click repeatedly.','info');
+
+  try{
+    const {error}=await supabaseClient.auth.resetPasswordForEmail(email,{
+      redirectTo:IZYPAYS_AUTH_REDIRECT_URL
+    });
+    if(error)throw error;
+    if(alertEl)alertEl.innerHTML=alertBox('If this email belongs to an izypays administrator account, password-reset instructions should arrive shortly. Check your inbox and spam folder, then open the newest reset email.','success');
+  }catch(error){
+    console.error('Password reset request failed:',error);
+    const rawMessage=String(error?.message||error?.code||'');
+    const lowerMessage=rawMessage.toLowerCase();
+    const rateLimited =
+      lowerMessage.includes('rate limit') ||
+      lowerMessage.includes('too many requests') ||
+      lowerMessage.includes('over_email_send_rate_limit') ||
+      lowerMessage.includes('email rate limit exceeded');
+
+    if(alertEl){
+      if(rateLimited){
+        alertEl.innerHTML=alertBox('Supabase has temporarily limited password-reset emails. Please wait before trying again; repeated clicks will not bypass the limit. No custom SMTP has been configured.','warning');
+      }else{
+        alertEl.innerHTML=alertBox(rawMessage||'We could not request a password-reset email. Please try again later.','danger');
+      }
+    }
+  }finally{
+    passwordResetRequestInProgress = false;
+    if(button){
+      button.disabled=false;
+      button.textContent='Forgot password?';
+    }
+  }
 }
+
+function showPasswordRecovery(){
+  passwordRecoveryMode=true;
+  document.getElementById('publicHome')?.classList.add('d-none');
+  document.getElementById('loginScreen')?.classList.add('d-none');
+  document.getElementById('parentScreen')?.classList.add('d-none');
+  document.getElementById('appShell')?.classList.add('d-none');
+  document.getElementById('subscriptionGate')?.classList.add('d-none');
+  document.getElementById('passwordRecoveryScreen')?.classList.remove('d-none');
+  const alertEl=document.getElementById('passwordRecoveryAlert');
+  if(alertEl){
+    const params=new URLSearchParams(window.location.hash.replace(/^#/,""));
+    const query=new URLSearchParams(window.location.search||"");
+    const expired=params.get('error_code')==='otp_expired'||query.get('error_code')==='otp_expired';
+    alertEl.innerHTML=expired
+      ?alertBox('This password-reset link has expired. Return to login and request a new reset email.','warning')
+      :'';
+  }
+  setTimeout(()=>document.getElementById('recoveryNewPassword')?.focus(),50);
+}
+
+async function updatePasswordFromRecovery(event){
+  event.preventDefault();
+  const password=document.getElementById('recoveryNewPassword')?.value||'';
+  const confirmation=document.getElementById('recoveryConfirmPassword')?.value||'';
+  const alertEl=document.getElementById('passwordRecoveryAlert');
+  const button=document.getElementById('saveRecoveredPasswordButton');
+  if(password.length<8){alertEl.innerHTML=alertBox('Your password must be at least 8 characters.','warning');return;}
+  if(password!==confirmation){alertEl.innerHTML=alertBox('The passwords do not match. Please enter them again.','warning');return;}
+  button.disabled=true;
+  button.textContent='Updating password...';
+  try{
+    const {data:sessionData,error:sessionError}=await supabaseClient.auth.getSession();
+    if(sessionError)throw sessionError;
+    if(!sessionData?.session)throw new Error('This reset link is missing a valid recovery session or has expired. Request a new password reset email and open the newest link.');
+    const {error}=await supabaseClient.auth.updateUser({password});
+    if(error)throw error;
+    document.getElementById('passwordRecoveryForm')?.reset();
+    alertEl.innerHTML=alertBox('Your password has been changed successfully. You can now log in using your new password.','success');
+    try{await supabaseClient.auth.signOut();}catch(signOutError){console.warn('Password changed; recovery session sign-out could not complete:',signOutError);}
+    passwordRecoveryMode=false;
+    currentUser=null;
+    window.history.replaceState({},document.title,window.location.pathname);
+    document.getElementById('passwordRecoveryScreen')?.classList.add('d-none');
+    showLogin();
+    const loginAlert=document.getElementById('loginAlert');
+    if(loginAlert)loginAlert.innerHTML=alertBox('Password changed successfully. Log in with your new password.','success');
+  }catch(error){
+    console.error('Password update failed:',error);
+    alertEl.innerHTML=alertBox(error?.message||'We could not update your password. Request a new reset email and try again.','danger');
+  }finally{
+    button.disabled=false;
+    button.textContent='Save new password';
+  }
+}
+
+function leavePasswordRecovery(){
+  passwordRecoveryMode=false;
+  document.getElementById('passwordRecoveryScreen')?.classList.add('d-none');
+  window.history.replaceState({},document.title,window.location.pathname);
+  showLogin();
+}
+
 
 function initAcademicControls(){populateAcademicScopeClasses();updateAcademicControls();}
 
@@ -5926,6 +6086,28 @@ async function parentStartPayment(sessionToken){
    if(!url)
      throw new Error("Paystack did not return an authorization URL.");
 
+   // Save a local recovery record before leaving for Paystack. The return handler
+   // uses the server-confirmed payment history/receipt, never the URL alone, to show success.
+   const selectedChild = parentVerifiedChildren[parentSelectedChildIndex] || {};
+   const profile = (() => { try { return JSON.parse(localStorage.getItem("schoolpay_parent_profile") || "{}"); } catch (e) { return {}; } })();
+   const paymentReference = String(req.payment_reference || req.reference || "").trim();
+   if (!paymentReference) throw new Error("The payment request has no reference. Please try again or contact the school.");
+   localStorage.setItem("izypays_pending_parent_payment", JSON.stringify({
+     reference: paymentReference,
+     session_token: sessionToken,
+     parent_email: email,
+     created_at: new Date().toISOString(),
+     child: {
+       ...selectedChild,
+       session_token: sessionToken,
+       student_code: selectedChild.student_code || profile.student_code || "",
+       student_name: selectedChild.student_name || [selectedChild.first_name, selectedChild.middle_name, selectedChild.surname].filter(Boolean).join(" "),
+       parent_phone: selectedChild.parent_phone || profile.parent_phone || "",
+       school_name: selectedChild.school_name || profile.school_name || "",
+       school_code: selectedChild.school_code || profile.school_code || ""
+     }
+   }));
+
    window.location.href = url;
 
  }catch(error){
@@ -5941,6 +6123,80 @@ async function parentStartPayment(sessionToken){
        `<i class="bi bi-credit-card"></i> Continue to Paystack`;
    }
  }
+}
+
+
+/* =========================================================
+   PARENT PAYMENT RETURN / VERIFIED SUCCESS
+   A browser redirect is not proof of payment. The success message is shown only
+   after the server-side webhook has recorded the matching successful payment.
+========================================================= */
+async function handleParentPaymentReturn(){
+  const params = new URLSearchParams(window.location.search || "");
+  const urlReference = String(params.get("reference") || params.get("trxref") || "").trim();
+  if(!urlReference) return false;
+
+  let pending;
+  try { pending = JSON.parse(localStorage.getItem("izypays_pending_parent_payment") || "null"); }
+  catch(e) { pending = null; }
+
+  const parentAlert = document.getElementById("parentAlert");
+  const result = document.getElementById("parentStudentResult");
+  if(!pending || !pending.session_token || !pending.reference){
+    showParentPortal();
+    if(parentAlert) parentAlert.innerHTML = alertBox("We returned from Paystack, but this browser could not find the saved payment session. Please search for your child again and check the fee balance before attempting another payment.", "warning");
+    return true;
+  }
+  if(urlReference !== String(pending.reference)){
+    showParentPortal();
+    if(parentAlert) parentAlert.innerHTML = alertBox("The returned transaction reference does not match the payment you started. No payment has been marked as successful. Please check your fee balance or contact the school.", "warning");
+    return true;
+  }
+
+  const child = pending.child || {};
+  parentVerifiedChildren = [{ ...child, session_token: pending.session_token }];
+  parentSelectedChildIndex = 0;
+  localStorage.setItem("schoolpay_parent_session", pending.session_token);
+  showParentPortal();
+  document.getElementById("parentSearchForm")?.classList.add("d-none");
+  result?.classList.remove("d-none");
+  if(result) result.innerHTML = '<div class="text-center p-4"><div class="spinner-border" role="status" aria-label="Confirming transaction"></div><p class="mt-3 mb-0">Confirming your transaction with Paystack. Please do not pay again while we check.</p></div>';
+  if(parentAlert) parentAlert.innerHTML = alertBox("We are checking the transaction with the school's payment records. Please do not make a second payment.", "info");
+
+  let confirmed = false;
+  let lastError = null;
+  // The webhook may need a few seconds to verify Paystack and update the database.
+  for(let attempt=0; attempt<20; attempt++){
+    try{
+      const {data:history, error:historyError} = await supabaseClient.rpc("parent_get_payment_history_by_session", { p_session_token: pending.session_token });
+      if(historyError) throw historyError;
+      const match = (Array.isArray(history) ? history : []).find(row => String(row.reference || "") === urlReference && String(row.status || "").toLowerCase() === "success");
+      if(match){ confirmed = true; break; }
+
+      const {data:receipt, error:receiptError} = await supabaseClient.rpc("parent_get_payment_receipt", { p_session_token: pending.session_token, p_reference: urlReference });
+      if(receiptError) throw receiptError;
+      if(Array.isArray(receipt) ? receipt.length > 0 : !!receipt){ confirmed = true; break; }
+    }catch(error){
+      lastError = error;
+      console.warn("Payment confirmation check did not complete yet:", error?.message || error);
+    }
+    if(attempt < 19) await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+
+  if(confirmed){
+    localStorage.removeItem("izypays_pending_parent_payment");
+    window.history.replaceState({}, document.title, window.location.pathname);
+    try{ await loadParentFees(pending.session_token); }
+    catch(error){ console.error("Fee refresh after payment confirmation failed:", error); }
+    if(parentAlert) parentAlert.innerHTML = alertBox("Payment successful! Your transaction has been confirmed and your school-fee balance has been refreshed.", "success");
+    return true;
+  }
+
+  // Refresh the dashboard even if webhook confirmation is delayed, but do not claim success.
+  try{ await loadParentFees(pending.session_token); }catch(error){ console.error("Fee refresh while awaiting payment confirmation failed:", error); }
+  if(parentAlert) parentAlert.innerHTML = alertBox("Your payment has not been confirmed in the school's records yet. Do not pay again. Wait a little and refresh this page, or contact the school with reference " + escapeHTML(urlReference) + "." + (lastError ? " We could not complete one of the confirmation checks." : ""), "warning");
+  // Keep the reference in the address bar so a refresh can retry verification.
+  return true;
 }
 
 
@@ -6042,7 +6298,13 @@ document.addEventListener(
     restoreParentDetails();
     document.getElementById("schoolCountry")?.addEventListener("change",applyCountryCurrency);
     document.getElementById("schoolCountry")?.addEventListener("input",applyCountryCurrency);
-    checkSession();
+    // Handle Paystack return before the normal startup can hide the parent portal.
+    handleParentPaymentReturn().then(handled => { if(!handled) checkSession(); }).catch(error => {
+      console.error("Parent payment return handler failed:", error);
+      const alertEl = document.getElementById("parentAlert");
+      if(alertEl) alertEl.innerHTML = alertBox("We could not verify the returned transaction. Do not pay again; search for your child and check the balance, or contact the school.", "warning");
+      showParentPortal();
+    });
   }
 );
 
@@ -6050,6 +6312,21 @@ document.addEventListener(
 /* Listen for authentication changes */
 
 supabaseClient.auth.onAuthStateChange((event,session)=>{
+  if(event === 'PASSWORD_RECOVERY'){
+    passwordRecoveryMode=true;
+    if(session)currentUser=session.user;
+    showPasswordRecovery();
+    return;
+  }
+
+  // Supabase may emit INITIAL_SESSION or SIGNED_IN for the recovery token.
+  // Keep those events from sending the user into the admin app before a password is set.
+  if(passwordRecoveryMode){
+    if(session)currentUser=session.user;
+    showPasswordRecovery();
+    return;
+  }
+
   if(session){
     // A different account invalidates work started for the previous account.
     if(currentUser?.id && currentUser.id !== session.user.id){
