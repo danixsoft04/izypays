@@ -1133,6 +1133,18 @@ body{
             <i class="bi bi-person-plus"></i>
             Add Student
           </button>
+          <button class="btn btn-outline-warning" onclick="selectDuplicateStudents()">
+            <i class="bi bi-files me-1"></i> Select Duplicate Students
+          </button>
+          <button class="btn btn-outline-danger" onclick="bulkDeleteSelectedStudents()">
+            <i class="bi bi-trash me-1"></i> Delete Selected
+          </button>
+          <button class="btn btn-danger" onclick="deleteAllStudents()">
+            <i class="bi bi-trash3 me-1"></i> Delete All Students
+          </button>
+          <button class="btn btn-outline-secondary" id="undoStudentUploadBtn" onclick="undoLastStudentUpload()" disabled>
+            <i class="bi bi-arrow-counterclockwise me-1"></i> Undo Last Import
+          </button>
 
         </div>
 
@@ -3443,8 +3455,41 @@ function toggleSidebar(){
    STUDENTS
 ========================================================= */
 
+// IDs from the most recent successful CSV/Excel import, saved per school so Undo
+// survives a page reload without ever crossing into another school's records.
+window.izypaysLastStudentUploadIds = window.izypaysLastStudentUploadIds || [];
+window.izypaysUndoSchoolId = window.izypaysUndoSchoolId || null;
+function studentUndoStorageKey(){return currentSchool?.id?`izypays:lastStudentImport:${currentSchool.id}`:null;}
+function setStudentUploadUndo(ids){
+  window.izypaysLastStudentUploadIds = Array.isArray(ids) ? [...new Set(ids.filter(Boolean))] : [];
+  window.izypaysUndoSchoolId = currentSchool?.id || null;
+  const key=studentUndoStorageKey();
+  try{
+    if(key){
+      if(window.izypaysLastStudentUploadIds.length)localStorage.setItem(key,JSON.stringify(window.izypaysLastStudentUploadIds));
+      else localStorage.removeItem(key);
+    }
+  }catch(storageError){console.warn("Could not persist the student import undo list:",storageError);}
+  const button=document.getElementById("undoStudentUploadBtn");
+  if(button) button.disabled = !window.izypaysLastStudentUploadIds.length;
+}
+function restoreStudentUploadUndoForCurrentSchool(){
+  if(!currentSchool?.id)return;
+  if(window.izypaysUndoSchoolId===currentSchool.id){
+    const button=document.getElementById("undoStudentUploadBtn");
+    if(button)button.disabled=!window.izypaysLastStudentUploadIds.length;
+    return;
+  }
+  window.izypaysUndoSchoolId=currentSchool.id;
+  let ids=[];
+  try{ids=JSON.parse(localStorage.getItem(studentUndoStorageKey())||"[]");}catch(_){ids=[];}
+  window.izypaysLastStudentUploadIds=Array.isArray(ids)?ids.filter(x=>typeof x==="string"&&x):[];
+  const button=document.getElementById("undoStudentUploadBtn");
+  if(button)button.disabled=!window.izypaysLastStudentUploadIds.length;
+}
 async function loadStudents(){
   if(!currentSchool) return;
+  restoreStudentUploadUndoForCurrentSchool();
   const {data,error}=await supabaseClient.from("students").select("*").eq("school_id",currentSchool.id).order("created_at",{ascending:false});
   if(error){document.getElementById("studentAlert").innerHTML=alertBox(error.message,"danger");return;}
   students=data||[]; renderStudents(); populateStudentSelectors();
@@ -3478,6 +3523,44 @@ function updateAcademicSelectionCount(){
   const count=selectedAcademicStudentIds().length;
   const el=document.getElementById("academicSelectionCount");
   if(el)el.textContent=`${count} student${count===1?'':'s'} selected`;
+}
+function selectDuplicateStudents(){
+  if(!Array.isArray(students)||!students.length){
+    document.getElementById("studentAlert").innerHTML=alertBox("There are no students to check for duplicates.","warning");
+    return;
+  }
+  // Check all students in this school, not just the currently filtered table.
+  const groups=new Map();
+  const addToGroup=(key,student)=>{
+    if(!key)return;
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(student.id);
+  };
+  const norm=value=>String(value==null?"":value).trim().toLocaleLowerCase().replace(/[^a-z0-9]/g,"");
+  for(const student of students){
+    const studentCode=norm(student.student_id);
+    if(studentCode)addToGroup(`id:${studentCode}`,student);
+    const name=norm([student.first_name,student.middle_name,student.surname].filter(Boolean).join(" "));
+    const className=norm(student.class_name);
+    const phone=String(student.parent_phone||"").replace(/\D/g,"");
+    // A full identity match requires all three fields to be present to reduce false positives.
+    if(name&&className&&phone)addToGroup(`identity:${name}|${className}|${phone}`,student);
+  }
+  const duplicateIds=new Set();
+  for(const ids of groups.values())if(ids.length>1)ids.forEach(id=>duplicateIds.add(id));
+  // Reset any table filter so every duplicate in this school's student list can be selected.
+  renderStudents(students);
+  clearAcademicStudentSelection();
+  let selected=0;
+  document.querySelectorAll(".academic-student-check").forEach(box=>{
+    if(duplicateIds.has(box.dataset.studentId)&&!box.disabled){box.checked=true;selected++;}
+  });
+  updateAcademicSelectionCount();
+  if(!duplicateIds.size){
+    document.getElementById("studentAlert").innerHTML=alertBox("No duplicates were found. Matching is based on repeated Student ID, or the same full name, class, and parent phone number.","success");
+  }else{
+    document.getElementById("studentAlert").innerHTML=alertBox(`${selected} duplicate student record(s) selected. Review the highlighted selections, then click Delete Selected to remove them. Matching uses repeated Student ID, or the same full name, class, and parent phone number.`,"warning");
+  }
 }
 function selectVisibleAcademicStudents(){
   document.querySelectorAll(".academic-student-check:not(:disabled)").forEach(el=>el.checked=true);
@@ -3831,12 +3914,74 @@ async function saveStudent(event){
 }
 async function deleteStudent(id){
   const s=students.find(x=>x.id===id); if(!s)return;
-  if(!confirm(`WARNING: Delete ${fullStudentName(s)}? This may remove the student's linked records. Continue?`))return;
-  if(!confirm(`FINAL WARNING: You are permanently deleting ${fullStudentName(s)}. This action cannot be undone. Click OK only if you are certain.`))return;
-  const {error}=await supabaseClient.rpc("delete_my_student",{p_student_id:id});
-  if(error){alert(error.message);return;}
-  await loadStudents();await loadStudentFees();await refreshDashboard();
-  document.getElementById("studentAlert").innerHTML=alertBox("Student deleted successfully.","success");
+  const name=fullStudentName(s)||s.student_id||"this student";
+  if(!confirm(`WARNING: Delete ${name}? Linked fee/session records may also be removed. Students with payment history are protected and cannot be deleted. Continue?`))return;
+  if(!confirm(`FINAL WARNING: Permanently delete ${name}? This cannot be undone. Click OK only if you are certain.`))return;
+  await deleteStudentIdsSafely([id],"Student deleted successfully.");
+}
+async function deleteStudentIdsSafely(ids, successMessage){
+  if(!currentSchool){
+    document.getElementById("studentAlert").innerHTML=alertBox("Your school session is not loaded. Please sign out and sign in again, then retry.","danger");
+    return {successIds:[],failedIds:(ids||[]).filter(Boolean)};
+  }
+  const uniqueIds=[...new Set((ids||[]).filter(Boolean))];
+  if(!uniqueIds.length){document.getElementById("studentAlert").innerHTML=alertBox("No students selected.","warning");return {successIds:[],failedIds:[]};}
+  const successIds=[];
+  const failures=[];
+  // Process each record independently. One student with financial history must not block
+  // deletion of other eligible students. The database RPC remains the authority.
+  for(const id of uniqueIds){
+    try{
+      const {data,error}=await supabaseClient.rpc("delete_my_student",{p_student_id:id});
+      if(error) throw error;
+      if(data===false) throw new Error("The database did not confirm deletion.");
+      successIds.push(id);
+    }catch(error){
+      const student=students.find(x=>x.id===id);
+      failures.push({id,name:fullStudentName(student||{})||student?.student_id||id,message:String(error?.message||"Unknown deletion error")});
+      console.error("Student deletion failed",id,error);
+    }
+  }
+  await loadStudents();
+  if(typeof loadStudentFees==="function") await loadStudentFees();
+  if(typeof refreshDashboard==="function") await refreshDashboard();
+  if(failures.length){
+    const protectedCount=failures.filter(x=>/payment history|financial history/i.test(x.message)).length;
+    const detail=failures.slice(0,5).map(x=>`${x.name}: ${x.message}`).join("; ");
+    const more=failures.length>5?`; and ${failures.length-5} more failure(s)`:"";
+    const prefix=successIds.length?`${successIds.length} student(s) deleted. `:"No students were deleted. ";
+    document.getElementById("studentAlert").innerHTML=alertBox(`${prefix}${failures.length} could not be deleted${protectedCount?` (${protectedCount} have payment history and are protected)`:""}. Details: ${detail}${more}`,successIds.length?"warning":"danger");
+  }else{
+    document.getElementById("studentAlert").innerHTML=alertBox(successMessage,"success");
+  }
+  return {successIds,failedIds:failures.map(x=>x.id),failures};
+}
+async function bulkDeleteSelectedStudents(){
+  const ids=selectedAcademicStudentIds();
+  if(!ids.length){document.getElementById("studentAlert").innerHTML=alertBox("Select one or more students using the checkboxes first.","warning");return;}
+  if(!confirm(`Delete ${ids.length} selected student(s) and their linked records? This cannot be undone.`))return;
+  if(!confirm(`FINAL CONFIRMATION: Permanently delete these ${ids.length} selected student(s)?`))return;
+  await deleteStudentIdsSafely(ids,`${ids.length} selected student(s) deleted successfully.`);
+  clearAcademicStudentSelection();
+}
+async function deleteAllStudents(){
+  if(!currentSchool)return;
+  const ids=students.map(s=>s.id).filter(Boolean);
+  if(!ids.length){document.getElementById("studentAlert").innerHTML=alertBox("There are no students to delete.","warning");return;}
+  const schoolName=currentSchool.name||currentSchool.school_name||"this school";
+  if(!confirm(`DANGER: This will permanently delete ALL ${ids.length} student(s) for ${schoolName}, including linked student records. It will not delete students belonging to other schools. Continue?`))return;
+  const typed=prompt(`To confirm, type DELETE ALL ${ids.length}`);
+  if(typed!==`DELETE ALL ${ids.length}`){document.getElementById("studentAlert").innerHTML=alertBox("Delete-all cancelled. No students were deleted.","info");return;}
+  const result=await deleteStudentIdsSafely(ids,`All ${ids.length} student(s) were deleted for this school.`);
+  if(result.successIds.length) clearAcademicStudentSelection();
+}
+async function undoLastStudentUpload(){
+  const ids=(window.izypaysLastStudentUploadIds||[]).slice();
+  if(!currentSchool||!ids.length){setStudentUploadUndo([]);document.getElementById("studentAlert").innerHTML=alertBox("There is no recent student upload available to undo in this session.","warning");return;}
+  if(!confirm(`Undo the most recent upload by deleting its ${ids.length} successfully imported student(s)? Students added or edited separately will not be targeted.`))return;
+  const result=await deleteStudentIdsSafely(ids,`Undo completed: ${ids.length} student(s) from the last import were removed.`);
+  // Keep only failed IDs so the user can retry undo for any rows that remain.
+  setStudentUploadUndo(result.failedIds||[]);
 }
 /* =========================================================
    CSV IMPORT
@@ -4088,6 +4233,9 @@ async function importCSVRows(){
   if(!rows.length) return;
 
   let imported = 0, skipped = 0;
+  const importedIds = [];
+  // A new import replaces the previous undo target, even if this upload imports none.
+  setStudentUploadUndo([]);
   for(const row of rows){
     let firstName = String(row.first_name || "").trim();
     let surname = String(row.surname || "").trim();
@@ -4118,15 +4266,17 @@ async function importCSVRows(){
       date_of_birth: row.date_of_birth || row.dob || row.dateofbirth || null
     };
 
-    const {error} = await supabaseClient.from("students").insert(payload);
+    const {data: insertedStudent, error} = await supabaseClient.from("students").insert(payload).select("id").single();
     if(error){
       console.warn("Skipped spreadsheet row:", error.message);
       skipped++;
     }else{
       imported++;
+      if(insertedStudent?.id) importedIds.push(insertedStudent.id);
     }
   }
 
+  setStudentUploadUndo(importedIds);
   const modalElement = document.getElementById("csvPreviewModal");
   const modal = modalElement ? bootstrap.Modal.getInstance(modalElement) : null;
   if(modal) modal.hide();
@@ -4134,7 +4284,7 @@ async function importCSVRows(){
   await loadStudents();
   await refreshDashboard();
   document.getElementById("studentAlert").innerHTML = alertBox(
-    `${imported} student(s) imported. ${skipped} row(s) skipped. Each imported student was assigned a class from the saved sequence.`,
+    `${imported} student(s) imported. ${skipped} row(s) skipped. Each imported student was assigned a class from the saved sequence.${importedIds.length ? " Use Undo Last Import to remove these imported records if needed (available until the next import or page reload)." : ""}`,
     imported ? "success" : "warning"
   );
 }
