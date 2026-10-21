@@ -6549,5 +6549,61 @@ if("serviceWorker" in navigator && (location.protocol === "https:" || location.h
 
 <!-- PROPOSED: SheetJS enables client-side Excel .xlsx/.xls imports; Google Sheets integration is not included. -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+	
+<!-- IzyPays Share App -->
+<script>
+(function () {
+  const appLink = "https://danixsoft04.github.io/izypays/";
+
+  if (document.getElementById("izypaysShareButton")) return;
+
+  const button = document.createElement("button");
+  button.id = "izypaysShareButton";
+  button.type = "button";
+  button.innerHTML = "↗ Share IzyPays";
+
+  button.style.cssText = [
+    "position:fixed",
+    "left:16px",
+    "bottom:18px",
+    "z-index:1070",
+    "padding:12px 18px",
+    "border:0",
+    "border-radius:30px",
+    "background:#1746a2",
+    "color:white",
+    "font-weight:600",
+    "font-size:14px",
+    "box-shadow:0 4px 14px #0002",
+    "cursor:pointer"
+  ].join(";");
+
+  button.addEventListener("click", async function () {
+    const shareData = {
+      title: "IzyPays – School Fees Made Simple",
+      text: "Use IzyPays to access school fees information. Open the app here:",
+      url: appLink
+    };
+
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+      } else if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(appLink);
+        alert("IzyPays link copied. You can now share it with parents.");
+      } else {
+        window.prompt("Copy this IzyPays link to share:", appLink);
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        alert("Sharing was not completed. Please try again.");
+      }
+    }
+  });
+
+  document.body.appendChild(button);
+})();
+</script>
+
 </body>
 </html>
