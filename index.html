@@ -351,6 +351,42 @@ body{
 .student-actions-scroll>.btn{flex:0 0 auto}
 @media(max-width:768px){.student-actions-scroll{width:100%}}
 </style>
+
+
+
+<style id="izypays-student-actions-scroll-fix">
+.student-actions-scroll {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-x: scroll !important;
+    overflow-y: hidden !important;
+    white-space: nowrap !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x pan-y;
+    scrollbar-width: thin;
+    padding: 0 0 12px !important;
+    margin-bottom: 8px;
+}
+
+.student-actions-scroll > button {
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+}
+
+.student-actions-scroll::-webkit-scrollbar {
+    height: 6px;
+}
+
+.student-actions-scroll::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 10px;
+}
+</style>
+
+
 </head>
 
 <body>
