@@ -1327,42 +1327,37 @@ body{
       </div>
 
 
-      <div class="table-card">
-
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+        <h5 class="mb-0">Active Students</h5>
+        <span class="text-muted small">Only students not marked as completed appear here.</span>
+      </div>
+      <div class="table-card mb-4">
         <div class="table-responsive">
-
           <table class="table align-middle mb-0">
-
-            <thead>
-              <tr>
-                <th><input type="checkbox" class="form-check-input" aria-label="Select all visible students" onchange="toggleVisibleAcademicSelection(this.checked)"></th>
-                <th>Student ID</th>
-                <th>Name</th>
-                <th>Class</th>
-                <th>Status</th>
-                <th>Age</th>
-                <th>DoB</th>
-                <th>Parent Phone</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-
-            <tbody id="studentsBody">
-
-              <tr>
-                <td colspan="9">
-                  <div class="empty-state">
-                    No students found.
-                  </div>
-                </td>
-              </tr>
-
-            </tbody>
-
+            <thead><tr>
+              <th><input type="checkbox" class="form-check-input" aria-label="Select all visible active students" onchange="toggleVisibleAcademicSelection(this.checked)"></th>
+              <th>Student ID</th><th>Name</th><th>Class</th><th>Status</th><th>Age</th><th>DoB</th><th>Parent Phone</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="studentsBody"><tr><td colspan="9"><div class="empty-state">No active students found.</div></td></tr></tbody>
           </table>
-
         </div>
+      </div>
 
+      <div class="card-sp p-3 mb-3" id="completedStudentsSection">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+          <div><h5 class="mb-1">Completed Students</h5><p class="text-muted small mb-0">Students manually marked as completed are listed here separately. Active-student filters do not affect this list.</p></div>
+          <span class="badge text-bg-success" id="completedListCount">0 completed</span>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-md-8"><input id="completedStudentSearch" class="form-control" placeholder="Search completed student name, ID or phone..." oninput="filterCompletedStudents()"></div>
+          <div class="col-md-4"><select id="completedClassFilter" class="form-select" onchange="filterCompletedStudents()"><option value="">All Completed Classes</option></select></div>
+        </div>
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead><tr><th>Student ID</th><th>Name</th><th>Last Class</th><th>Status</th><th>Age</th><th>DoB</th><th>Parent Phone</th><th>Actions</th></tr></thead>
+            <tbody id="completedStudentsBody"><tr><td colspan="8"><div class="empty-state">No completed students found.</div></td></tr></tbody>
+          </table>
+        </div>
       </div>
 
     </section>
@@ -3538,22 +3533,34 @@ async function loadStudents(){
   restoreStudentUploadUndoForCurrentSchool();
   const {data,error}=await supabaseClient.from("students").select("*").eq("school_id",currentSchool.id).order("created_at",{ascending:false});
   if(error){document.getElementById("studentAlert").innerHTML=alertBox(error.message,"danger");return;}
-  students=data||[]; renderStudents(); populateStudentSelectors();
+  students=data||[]; renderStudents(); renderCompletedStudents(); populateStudentSelectors();
   populateAcademicScopeClasses();
   updateAcademicControls();
   updateCompletedStudentCount();
   updateActiveStudentCount();
   if(document.getElementById("academicProgressCard")) await loadAcademicClassSequence();
 }
+function studentRowActions(student){
+  const sid=String(student.student_id||'').replace(/'/g,"\\'");
+  return `<button class="btn btn-sm btn-outline-secondary me-1" title="Copy Student ID" onclick="copyStudentId('${sid}')"><i class="bi bi-copy"></i></button><button class="btn btn-sm btn-outline-primary me-1" onclick="editStudent('${student.id}')"><i class="bi bi-pencil"></i></button><button class="btn btn-sm btn-outline-danger" onclick="deleteStudent('${student.id}')"><i class="bi bi-trash"></i></button>`;
+}
 function renderStudents(list=students){
-  window.izypaysVisibleStudentRows=Array.isArray(list)?list.slice():[];
+  const activeList=(Array.isArray(list)?list:[]).filter(student=>student.is_completed!==true);
+  window.izypaysVisibleStudentRows=activeList.slice();
   const body=document.getElementById("studentsBody");
-  if(!list.length){body.innerHTML='<tr><td colspan="9"><div class="empty-state">No students found.</div></td></tr>';updateAcademicSelectionCount();return;}
-  body.innerHTML=list.map(student=>{
-    const completed=student.is_completed===true;
-    return `<tr class="${completed?'table-light':''}"><td><input type="checkbox" class="form-check-input academic-student-check" data-student-id="${escapeHTML(student.id)}" aria-label="Select ${escapeHTML(fullStudentName(student))}" ${completed?'disabled':''} onchange="updateAcademicSelectionCount()"></td><td><span class="fw-semibold">${escapeHTML(student.student_id)}</span></td><td>${escapeHTML(fullStudentName(student))}</td><td>${escapeHTML(student.class_name||"-")}</td><td>${completed?'<span class="badge text-bg-success">Completed</span>':'<span class="badge text-bg-primary">Active</span>'}</td><td>${student.age==null?"-":escapeHTML(String(student.age))}</td><td>${escapeHTML(student.date_of_birth||"-")}</td><td>${escapeHTML(student.parent_phone||"-")}</td><td><button class="btn btn-sm btn-outline-secondary me-1" title="Copy Student ID" onclick="copyStudentId('${String(student.student_id||'').replace(/'/g,"\\'")}')"><i class="bi bi-copy"></i></button><button class="btn btn-sm btn-outline-primary me-1" onclick="editStudent('${student.id}')"><i class="bi bi-pencil"></i></button><button class="btn btn-sm btn-outline-danger" onclick="deleteStudent('${student.id}')"><i class="bi bi-trash"></i></button></td></tr>`;
-  }).join("");
+  if(!body)return;
+  if(!activeList.length){body.innerHTML='<tr><td colspan="9"><div class="empty-state">No active students found.</div></td></tr>';updateAcademicSelectionCount();return;}
+  body.innerHTML=activeList.map(student=>`<tr><td><input type="checkbox" class="form-check-input academic-student-check" data-student-id="${escapeHTML(student.id)}" aria-label="Select ${escapeHTML(fullStudentName(student))}" onchange="updateAcademicSelectionCount()"></td><td><span class="fw-semibold">${escapeHTML(student.student_id)}</span></td><td>${escapeHTML(fullStudentName(student))}</td><td>${escapeHTML(student.class_name||"-")}</td><td><span class="badge text-bg-primary">Active</span></td><td>${student.age==null?"-":escapeHTML(String(student.age))}</td><td>${escapeHTML(student.date_of_birth||"-")}</td><td>${escapeHTML(student.parent_phone||"-")}</td><td>${studentRowActions(student)}</td></tr>`).join("");
   updateAcademicSelectionCount();
+}
+function renderCompletedStudents(list=(students||[]).filter(student=>student.is_completed===true)){
+  const completedList=(Array.isArray(list)?list:[]).filter(student=>student.is_completed===true);
+  const body=document.getElementById('completedStudentsBody');
+  const count=document.getElementById('completedListCount');
+  if(count)count.textContent=`${completedList.length} completed`;
+  if(!body)return;
+  if(!completedList.length){body.innerHTML='<tr><td colspan="8"><div class="empty-state">No completed students found.</div></td></tr>';return;}
+  body.innerHTML=completedList.map(student=>`<tr class="table-light"><td><span class="fw-semibold">${escapeHTML(student.student_id)}</span></td><td>${escapeHTML(fullStudentName(student))}</td><td>${escapeHTML(student.class_name||"-")}</td><td><span class="badge text-bg-success">Completed</span></td><td>${student.age==null?"-":escapeHTML(String(student.age))}</td><td>${escapeHTML(student.date_of_birth||"-")}</td><td>${escapeHTML(student.parent_phone||"-")}</td><td>${studentRowActions(student)}</td></tr>`).join('');
 }
 /* =========================================================
    STUDENT ACADEMIC PROGRESSION (SECURE SUPABASE RPC)
@@ -3860,14 +3867,22 @@ function generateStudentCSV(type){
 }
 
 function filterStudents(){
-  const search=document.getElementById("studentSearch").value.toLowerCase(); const className=document.getElementById("classFilter").value; const sort=document.getElementById("studentSort")?.value||"name";
-  const filtered=students.filter(s=>{const text=[s.student_id,s.first_name,s.middle_name,s.surname,s.parent_phone].filter(Boolean).join(" ").toLowerCase();return (!search||text.includes(search))&&(!className||s.class_name===className);});
+  const search=(document.getElementById("studentSearch")?.value||"").toLowerCase(); const className=document.getElementById("classFilter")?.value||""; const sort=document.getElementById("studentSort")?.value||"name";
+  const filtered=(students||[]).filter(s=>s.is_completed!==true).filter(s=>{const text=[s.student_id,s.first_name,s.middle_name,s.surname,s.parent_phone].filter(Boolean).join(" ").toLowerCase();return (!search||text.includes(search))&&(!className||s.class_name===className);});
   filtered.sort((a,b)=>{if(sort.startsWith("name")){let x=fullStudentName(a).toLowerCase(),y=fullStudentName(b).toLowerCase();return sort==="name_desc"?y.localeCompare(x):x.localeCompare(y);}if(sort==="class")return String(a.class_name||"").localeCompare(String(b.class_name||""));return String(a.student_id||"").localeCompare(String(b.student_id||""));});
   renderStudents(filtered);
+}
+function filterCompletedStudents(){
+  const search=(document.getElementById('completedStudentSearch')?.value||'').toLowerCase();
+  const className=document.getElementById('completedClassFilter')?.value||'';
+  const filtered=(students||[]).filter(s=>s.is_completed===true).filter(s=>{const text=[s.student_id,s.first_name,s.middle_name,s.surname,s.parent_phone].filter(Boolean).join(' ').toLowerCase();return (!search||text.includes(search))&&(!className||s.class_name===className);});
+  filtered.sort((a,b)=>fullStudentName(a).localeCompare(fullStudentName(b)));
+  renderCompletedStudents(filtered);
 }
 function populateStudentSelectors(){
   const classes=[...new Set(students.map(s=>s.class_name).filter(Boolean))].sort();
   const filter=document.getElementById("classFilter"); if(filter){const v=filter.value;filter.innerHTML='<option value="">All Classes</option>'+classes.map(c=>`<option>${escapeHTML(c)}</option>`).join("");filter.value=v;}
+  const completedFilter=document.getElementById('completedClassFilter'); if(completedFilter){const v=completedFilter.value;completedFilter.innerHTML='<option value="">All Completed Classes</option>'+classes.map(c=>`<option>${escapeHTML(c)}</option>`).join('');completedFilter.value=v;}
   const opts='<option value="">Select Student</option>'+students.map(s=>`<option value="${s.id}">${escapeHTML(s.student_id)} - ${escapeHTML(fullStudentName(s))}</option>`).join("");
   const sel=document.getElementById("assignStudent"); if(sel) sel.innerHTML=opts;
   const fu=document.getElementById("followupStudent"); if(fu) fu.innerHTML=opts;
