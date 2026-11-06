@@ -3169,7 +3169,31 @@ function updateSubscriptionReminder(){
   const banner=document.getElementById("subscriptionReminderBanner");
   const title=document.getElementById("subscriptionReminderTitle");
   const message=document.getElementById("subscriptionReminderMessage");
+
   if(!banner||!title||!message||!currentSubscription)return;
+
+  // Create the close button once
+  let closeBtn=document.getElementById("closeSubscriptionReminder");
+
+  if(!closeBtn){
+    closeBtn=document.createElement("button");
+    closeBtn.id="closeSubscriptionReminder";
+    closeBtn.type="button";
+    closeBtn.innerHTML="&times;";
+    closeBtn.setAttribute("aria-label","Close reminder");
+
+    closeBtn.style.cssText=
+      "position:absolute;top:5px;right:10px;background:transparent;border:none;font-size:26px;font-weight:bold;cursor:pointer;color:inherit;line-height:1;";
+
+    closeBtn.onclick=function(){
+      banner.classList.add("d-none");
+      banner.dataset.dismissed="true";
+    };
+
+    banner.style.position="relative";
+    banner.appendChild(closeBtn);
+  }
+
   const now=new Date();
   const status=String(currentSubscription.status||"").toLowerCase();
   const trialEnd=currentSubscription.trial_ends_at?new Date(currentSubscription.trial_ends_at):null;
@@ -3179,17 +3203,33 @@ function updateSubscriptionReminder(){
   const dueDate=trialing?trialEnd:paidEnd;
   const days=dueDate?Math.ceil((dueDate-now)/86400000):null;
   const active=status==="active"&&!!paidEnd&&Number.isFinite(paidEnd.getTime())&&now<paidEnd;
+
   if(trialing&&days!==null&&days<=7){
-    banner.classList.remove("d-none");
+    if(banner.dataset.dismissed!=="true"){
+      banner.classList.remove("d-none");
+    }
     title.textContent="Free trial ending soon";
     message.textContent="Your free trial ends in "+Math.max(0,days)+" day(s). Pay GH₵300 for the next month when ready.";
+
   }else if(active&&days!==null&&days>0&&days<=7){
-    banner.classList.remove("d-none");
-    if(days<=1){title.textContent="Payment due within 24 hours";message.textContent="Renew now to avoid losing access to the school dashboard.";}
-    else if(days<=3){title.textContent="Payment due in "+days+" days";message.textContent="Your paid period ends soon. Pay GH₵300 to keep using izypays.";}
-    else{title.textContent="Payment due within a week";message.textContent="Your paid period ends in "+days+" days. Renew now to avoid interruption.";}
+    if(banner.dataset.dismissed!=="true"){
+      banner.classList.remove("d-none");
+    }
+
+    if(days<=1){
+      title.textContent="Payment due within 24 hours";
+      message.textContent="Renew now to avoid losing access to the school dashboard.";
+    }else if(days<=3){
+      title.textContent="Payment due in "+days+" days";
+      message.textContent="Your paid period ends soon. Pay GH₵300 to keep using izypays.";
+    }else{
+      title.textContent="Payment due within a week";
+      message.textContent="Your paid period ends in "+days+" days. Renew now to avoid interruption.";
+    }
+
   }else{
     banner.classList.add("d-none");
+    banner.dataset.dismissed="false";
   }
 }
 
